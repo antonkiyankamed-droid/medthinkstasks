@@ -165,7 +165,23 @@ body {
   </div>
 </div>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js";
+import { getFirestore, collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyA8fvygcYQoHosYWpUdVMJQTurboUz_Bf4",
+  authDomain: "tasks-a4b78.firebaseapp.com",
+  projectId: "tasks-a4b78",
+  storageBucket: "tasks-a4b78.firebasestorage.app",
+  messagingSenderId: "620358355411",
+  appId: "1:620358355411:web:cd0773cf9ea9adfd16c726"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const tasksCol = collection(db, 'tasks');
+
 const SYSTEM_PROMPT = `Jesteś asystentem do zarządzania zadaniami dla Antona i Michała.
 
 Zwracasz WYŁĄCZNIE czysty JSON — zero tekstu przed ani po, zero komentarzy, zero backtick-ów.
@@ -174,7 +190,7 @@ Formaty odpowiedzi:
 {"action":"add_task","reply":"...","task":{"text":"...","assignee":"Anton"}}
 {"action":"add_task","reply":"...","task":{"text":"...","assignee":"Michał"}}
 {"action":"add_task","reply":"...","task":{"text":"...","assignee":"obaj"}}
-{"action":"complete_task","reply":"...","complete_id":123456}
+{"action":"complete_task","reply":"...","complete_id":"FIRESTORE_ID"}
 {"action":"complete_task","reply":"...","complete_id":null}
 {"action":"list_tasks","reply":"...","filter":"Anton"}
 {"action":"list_tasks","reply":"...","filter":"Michał"}
@@ -193,7 +209,7 @@ DOPASUJ KONTEKSTOWO do listy zadań — nie szukaj dosłownego tekstu!
 "Zapłacona" + zadanie "sprawdź fakturę" → pasuje
 "Umówiony" + zadanie "umów Rafała" → pasuje
 "Wysłane" + zadanie "wyślij ofertę" → pasuje
-Zwróć complete_id równe ID pasującego zadania. Jeśli nic nie pasuje → complete_id null.
+Zwróć complete_id równe ID pasującego zadania (string z listy). Jeśli nic nie pasuje → complete_id null.
 
 list_tasks — pyta o listę:
 "jakie mam zadania" gdy pyta Anton → filter Anton
@@ -209,37 +225,40 @@ let currentUser = 'Anton';
 let tasks = [];
 let apiKey = '';
 
-function saveApiKey() {
+// Firebase real-time listener
+const q = query(tasksCol, orderBy('createdAt', 'asc'));
+onSnapshot(q, (snapshot) => {
+  tasks = snapshot.docs.map(d => ({ ...d.data(), firestoreId: d.id }));
+  updateCount();
+});
+
+window.saveApiKey = function() {
   const val = document.getElementById('api-key-input').value.trim();
-  if (!val.startsWith('gsk_')) {
-    alert('Klucz powinien zaczynać się od "gsk_"');
-    return;
-  }
+  if (!val.startsWith('gsk_')) { alert('Klucz powinien zaczynać się od "gsk_"'); return; }
   apiKey = val;
   localStorage.setItem('taskbot_groq_key', val);
   showApp();
-}
+};
 
-function resetApiKey() {
+window.resetApiKey = function() {
   if (!confirm('Zmienić klucz API?')) return;
   localStorage.removeItem('taskbot_groq_key');
   apiKey = '';
   document.getElementById('app').classList.remove('visible');
   document.getElementById('setup-screen').style.display = 'flex';
-}
+};
+
+window.setUser = function(name, btn) {
+  currentUser = name;
+  document.querySelectorAll('.user-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+};
 
 function showApp() {
   document.getElementById('setup-screen').style.display = 'none';
   document.getElementById('app').classList.add('visible');
-  loadTasks();
   addMessage('bot', 'Cześć! Napisz zadanie albo zapytaj co masz do zrobienia.', 'Bot');
   document.getElementById('msg-input').focus();
-}
-
-function setUser(name, btn) {
-  currentUser = name;
-  document.querySelectorAll('.user-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
 }
 
 function getTime() {
@@ -249,18 +268,6 @@ function getTime() {
 function updateCount() {
   const n = tasks.filter(t => !t.done).length;
   document.getElementById('task-count').textContent = `${n} aktywnych`;
-}
-
-function saveTasks() {
-  localStorage.setItem('taskbot_tasks', JSON.stringify(tasks));
-}
-
-function loadTasks() {
-  try {
-    const s = localStorage.getItem('taskbot_tasks');
-    if (s) tasks = JSON.parse(s);
-    updateCount();
-  } catch(e) {}
 }
 
 function addMessage(role, text, sender, extraHtml) {
@@ -282,8 +289,7 @@ function addMessage(role, text, sender, extraHtml) {
 function showTyping() {
   const chat = document.getElementById('chat');
   const div = document.createElement('div');
-  div.className = 'msg bot';
-  div.id = 'typing';
+  div.className = 'msg bot'; div.id = 'typing';
   div.innerHTML = `<div class="avatar bot">AI</div><div class="typing"><span></span><span></span><span></span></div>`;
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
@@ -314,17 +320,14 @@ function renderTasks(list) {
 async function callAI(userMessage) {
   const activeTasks = tasks.filter(t => !t.done).slice(-20);
   const taskList = activeTasks.length
-    ? activeTasks.map(t => `ID:${t.id} [${t.assignee}] "${t.text}"`).join('\n')
+    ? activeTasks.map(t => `ID:${t.firestoreId} [${t.assignee}] "${t.text}"`).join('\n')
     : '(brak aktywnych zadań)';
 
   const userContent = `Piszący: ${currentUser}\nWiadomość: "${userMessage}"\n\nAktywne zadania:\n${taskList}`;
 
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify({
       model: 'llama-3.3-70b-versatile',
       temperature: 0.1,
@@ -336,19 +339,15 @@ async function callAI(userMessage) {
     })
   });
 
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`API ${res.status}: ${err.slice(0, 200)}`);
-  }
-
+  if (!res.ok) { const e = await res.text(); throw new Error(`API ${res.status}: ${e.slice(0,200)}`); }
   const data = await res.json();
   const raw = data.choices?.[0]?.message?.content || '';
   const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error(`Nieprawidłowa odpowiedź: "${raw.slice(0, 100)}"`);
+  if (!match) throw new Error(`Nieprawidłowa odpowiedź: "${raw.slice(0,100)}"`);
   return JSON.parse(match[0]);
 }
 
-async function sendMsg() {
+window.sendMsg = async function() {
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
   if (!text) return;
@@ -368,27 +367,23 @@ async function sendMsg() {
     let extraHtml = '';
 
     if (result.action === 'add_task' && result.task) {
-      const t = {
-        id: Date.now(),
+      const newTask = {
         text: result.task.text,
         assignee: result.task.assignee || currentUser,
         done: false,
-        createdBy: currentUser
+        createdBy: currentUser,
+        createdAt: Date.now()
       };
-      tasks.push(t);
-      saveTasks();
-      updateCount();
-      extraHtml = renderTasks([t]);
+      const docRef = await addDoc(tasksCol, newTask);
+      extraHtml = renderTasks([{ ...newTask, firestoreId: docRef.id }]);
 
     } else if (result.action === 'complete_task') {
       const found = result.complete_id
-        ? tasks.find(t => !t.done && t.id === result.complete_id)
+        ? tasks.find(t => !t.done && t.firestoreId === result.complete_id)
         : null;
       if (found) {
-        found.done = true;
-        saveTasks();
-        updateCount();
-        extraHtml = renderTasks([found]);
+        await updateDoc(doc(db, 'tasks', found.firestoreId), { done: true });
+        extraHtml = renderTasks([{ ...found, done: true }]);
       } else {
         reply = 'Nie znalazłem pasującego zadania. Wpisz "pokaż wszystkie" żeby sprawdzić listę.';
       }
@@ -415,23 +410,20 @@ async function sendMsg() {
   }
 
   document.getElementById('send-btn').disabled = false;
-  input.focus();
-}
+  document.getElementById('msg-input').focus();
+};
 
 document.getElementById('msg-input').addEventListener('input', function() {
   this.style.height = 'auto';
   this.style.height = Math.min(this.scrollHeight, 110) + 'px';
 });
 document.getElementById('msg-input').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.sendMsg(); }
 });
 
 // Init
 const saved = localStorage.getItem('taskbot_groq_key');
-if (saved && saved.startsWith('gsk_')) {
-  apiKey = saved;
-  showApp();
-}
+if (saved && saved.startsWith('gsk_')) { apiKey = saved; showApp(); }
 </script>
 </body>
 </html>
