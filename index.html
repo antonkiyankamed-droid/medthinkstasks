@@ -247,7 +247,7 @@ reply: max 1-2 zdania po polsku.`;
 let currentUser = 'Anton';
 let tasks = [];
 let apiKey = '';
-let knownIds = new Set();
+let seenIds = new Set(); // IDs seen at app load — never trigger notifications for these
 let initialized = false;
 
 // ── Firebase ──────────────────────────────────────────────
@@ -256,18 +256,22 @@ onSnapshot(q, snapshot => {
   const fresh = snapshot.docs.map(d => ({ ...d.data(), fid: d.id }));
 
   if (initialized) {
+    // Only notify for truly NEW tasks (not present at load time)
     fresh.forEach(t => {
-      if (!knownIds.has(t.fid) && !t.done && t.createdBy && t.createdBy !== currentUser) {
+      if (!seenIds.has(t.fid) && !t.done && t.createdBy && t.createdBy !== currentUser) {
         const forme = t.assignee === currentUser || t.assignee === 'obaj';
         if (forme) showNotification(`${t.createdBy} dodał Ci nowe zadanie: "${t.text}"`);
+        seenIds.add(t.fid); // mark so we don't notify twice
       }
     });
+  } else {
+    // First load — mark all existing as seen, no notifications
+    fresh.forEach(t => seenIds.add(t.fid));
+    initialized = true;
   }
 
   tasks = fresh;
-  knownIds = new Set(tasks.map(t => t.fid));
   updateCount();
-  initialized = true;
 });
 
 // ── UI helpers ────────────────────────────────────────────
